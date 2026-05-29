@@ -19,7 +19,7 @@ import smtplib
 from email.message import EmailMessage
 
 # SAVIA_WIFI_IP_CORREOS_RECIENTES_V1
-# SAVIA_MENU_AJUSTES_SCROLL_V1
+# SAVIA_MENU_SCROLL_BAR_VISIBLE_V1
 
 # ==========================================
 # CONFIGURACIÓN UART
@@ -3850,7 +3850,7 @@ def abrir_actualizar_savia():
 menu_abierto = False
 menu_animando = False
 ALTURA_MENU = 405
-ANCHO_MENU = 370
+ANCHO_MENU = 385
 PASO_ANIMACION = 35
 
 frame_menu_desplegable = tk.Frame(
@@ -3972,11 +3972,11 @@ def _menu_touch_mover(event):
     # antes cualquier movimiento pequeño movía todo el panel.
     # Ahora se requiere un arrastre más claro y solo se desplaza
     # cuando el dedo avanzó suficientes pixeles.
-    if abs(dy) >= 16:
+    if abs(dy) >= 22:
         menu_touch_moved = True
 
         # Si el dedo sube, el contenido baja; si el dedo baja, el contenido sube.
-        pasos = int(-dy / 18)
+        pasos = int(-dy / 24)
 
         if pasos != 0:
             _scroll_menu(pasos)
@@ -4101,19 +4101,27 @@ canvas_menu = tk.Canvas(
     highlightthickness=0,
     bd=0
 )
+# Barra de desplazamiento visible para pantalla táctil.
+# Se deja ancha para que el usuario pueda tomarla con el dedo.
 scrollbar_menu = tk.Scrollbar(
     frame_menu_scroll,
     orient="vertical",
     command=canvas_menu.yview,
-    width=18
+    width=32,
+    bg="#52b788",
+    activebackground="#2d6a4f",
+    troughcolor="#e9f5ef",
+    relief="flat",
+    bd=0,
+    elementborderwidth=0
 )
 frame_menu_contenido = tk.Frame(canvas_menu, bg="#f8fbfa")
 
 ventana_menu_canvas = canvas_menu.create_window((0, 0), window=frame_menu_contenido, anchor="nw")
 canvas_menu.configure(yscrollcommand=scrollbar_menu.set)
 
-canvas_menu.pack(side="left", fill="both", expand=True, padx=(8, 0))
-scrollbar_menu.pack(side="right", fill="y", padx=(0, 6))
+canvas_menu.pack(side="left", fill="both", expand=True, padx=(8, 2))
+scrollbar_menu.pack(side="right", fill="y", padx=(3, 10), pady=(4, 4))
 
 
 def _actualizar_scroll_menu(event=None):
