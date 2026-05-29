@@ -19,7 +19,7 @@ import smtplib
 from email.message import EmailMessage
 
 # SAVIA_WIFI_IP_CORREOS_RECIENTES_V1
-# SAVIA_MENU_SCROLLBAR_REAL_VISIBLE_FIX_V2
+# SAVIA_MENU_SCROLL_ESTATICO_FIX_V1
 
 # ==========================================
 # CONFIGURACIÓN UART
@@ -3940,7 +3940,9 @@ def ejecutar_desde_menu(funcion):
 # En pantalla táctil, los widgets internos capturan el toque; por eso
 # se enlaza el gesto de arrastre a cada tarjeta y etiqueta del menú.
 menu_touch_y_root = 0
+menu_touch_start_view = 0.0
 menu_touch_moved = False
+MENU_TOUCH_UMBRAL_PX = 12
 
 
 def _scroll_menu(delta):
@@ -3957,33 +3959,59 @@ def _menu_mousewheel(event):
 
 
 def _menu_touch_inicio(event):
-    global menu_touch_y_root, menu_touch_moved
+    global menu_touch_y_root, menu_touch_start_view, menu_touch_moved
+
+    # Guardamos la posición REAL actual del menú en el momento exacto
+    # en que el usuario vuelve a tocar la pantalla. Así el siguiente
+    # arrastre empieza desde donde el menú quedó, sin regresar al punto anterior.
     menu_touch_y_root = event.y_root
     menu_touch_moved = False
+
+    try:
+        menu_touch_start_view = canvas_menu.yview()[0]
+    except Exception:
+        menu_touch_start_view = 0.0
+
     return "break"
 
 
 def _menu_touch_mover(event):
-    global menu_touch_y_root, menu_touch_moved
+    global menu_touch_moved
 
     dy = event.y_root - menu_touch_y_root
 
-    # Scroll menos sensible para pantalla táctil:
-    # antes cualquier movimiento pequeño movía todo el panel.
-    # Ahora se requiere un arrastre más claro y solo se desplaza
-    # cuando el dedo avanzó suficientes pixeles.
-    if abs(dy) >= 22:
-        menu_touch_moved = True
+    # Pequeña zona muerta para que un toque normal no mueva el menú.
+    if abs(dy) < MENU_TOUCH_UMBRAL_PX:
+        return "break"
 
-        # Si el dedo sube, el contenido baja; si el dedo baja, el contenido sube.
-        pasos = int(-dy / 24)
+    menu_touch_moved = True
 
-        if pasos != 0:
-            _scroll_menu(pasos)
-            menu_touch_y_root = event.y_root
+    try:
+        bbox = canvas_menu.bbox("all")
+        if not bbox:
+            return "break"
+
+        alto_contenido = max(1, bbox[3] - bbox[1])
+        alto_visible = max(1, canvas_menu.winfo_height())
+
+        # Si todo cabe en pantalla, no hay nada que desplazar.
+        if alto_contenido <= alto_visible:
+            return "break"
+
+        # Movimiento natural de pantalla táctil:
+        # dedo hacia arriba = bajar contenido; dedo hacia abajo = subir contenido.
+        nueva_posicion = menu_touch_start_view - (dy / alto_contenido)
+
+        # Límite real para no brincar ni regresar posiciones.
+        max_posicion = max(0.0, 1.0 - (alto_visible / alto_contenido))
+        nueva_posicion = max(0.0, min(max_posicion, nueva_posicion))
+
+        canvas_menu.yview_moveto(nueva_posicion)
+
+    except Exception:
+        pass
 
     return "break"
-
 
 def _vincular_scroll_menu(widget):
     # No enlazar el scroll táctil a controles que necesitan su propio gesto,
@@ -4194,7 +4222,8 @@ canvas_barra_menu.bind("<B1-Motion>", _mover_barra_menu)
 canvas_menu.configure(yscrollcommand=_yscroll_menu)
 
 canvas_menu.pack(side="left", fill="both", expand=True, padx=(8, 2))
-frame_barra_menu.pack(side="right", fill="y", padx=(3, 10), pady=(4, 4))
+# Barra visible retirada: el menú conserva la posición y se desplaza con arrastre táctil
+# frame_barra_menu.pack(side="right", fill="y", padx=(3, 10), pady=(4, 4))
 
 
 def _actualizar_scroll_menu(event=None):
