@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, date
 import smtplib
 from email.message import EmailMessage
 
-# SAVIA_ALERTAS_RELOJ_REAL_BOTONES_PREVIEW_V2
+# SAVIA_ACTUALIZADOR_INTERFAZ_V1
 
 # ==========================================
 # CONFIGURACIÓN UART
@@ -3572,6 +3572,63 @@ lbl_logo_savia.grid(row=0, column=1, sticky="n")
 frame_header_menu = tk.Frame(frame_header, bg="#2d6a4f")
 frame_header_menu.grid(row=0, column=2, sticky="e", padx=12)
 
+
+
+# ==========================================
+# ACTUALIZACIÓN DESDE LA INTERFAZ
+# ==========================================
+def abrir_actualizar_savia():
+    """Lanza el actualizador de SAVIA desde la interfaz.
+
+    El script /home/savia/actualizar_savia.sh se encarga de consultar GitHub,
+    descargar la última release, respaldar savia_f.py y reiniciar la app.
+    Se ejecuta en segundo plano para que pueda cerrar esta interfaz sin bloquearse.
+    """
+    ruta_actualizador = "/home/savia/actualizar_savia.sh"
+    ruta_log = "/home/savia/actualizar_savia.log"
+
+    if not os.path.exists(ruta_actualizador):
+        messagebox.showerror(
+            "Actualización no disponible",
+            "No se encontró el actualizador de SAVIA.\n\n"
+            "Debe existir este archivo:\n"
+            f"{ruta_actualizador}"
+        )
+        return
+
+    confirmar = messagebox.askyesno(
+        "Actualizar SAVIA",
+        "SAVIA buscará la versión más reciente en GitHub.\n\n"
+        "Si existe una actualización, se descargará, se creará un respaldo "
+        "y la interfaz se reiniciará automáticamente.\n\n"
+        "¿Quieres continuar?"
+    )
+
+    if not confirmar:
+        return
+
+    try:
+        # Ejecutar en segundo plano. El script puede cerrar esta app con pkill
+        # y volver a abrirla sin dejar la ventana congelada.
+        comando = (
+            f"nohup bash {ruta_actualizador} > {ruta_log} 2>&1 &"
+        )
+        subprocess.Popen(["bash", "-lc", comando])
+
+        messagebox.showinfo(
+            "Actualizando SAVIA",
+            "Se inició la búsqueda de actualización.\n\n"
+            "Si hay una versión nueva, la interfaz se cerrará y volverá a abrirse automáticamente.\n\n"
+            "Si no pasa nada, revisa el registro en:\n"
+            f"{ruta_log}"
+        )
+
+    except Exception as e:
+        messagebox.showerror(
+            "Error de actualización",
+            f"No se pudo iniciar el actualizador:\n{e}"
+        )
+
 # ==========================================
 # MENÚ TÁCTIL DESPLEGABLE - BRILLO_MENU_SLIDER_SIN_BOTONES
 # ==========================================
@@ -3982,6 +4039,16 @@ slider_brillo_menu = tk.Scale(
 slider_brillo_menu.set(int(ajustes_usuario.get("brillo", 80)))
 slider_brillo_menu.pack(side="left", fill="x", expand=True)
 
+
+seccion_actualizacion = crear_seccion_menu(frame_menu_contenido, "ACTUALIZACIÓN")
+crear_boton_menu(
+    seccion_actualizacion,
+    "⬇️  Actualizar SAVIA",
+    "Busca la última versión en GitHub e instala la actualización automáticamente.",
+    abrir_actualizar_savia,
+    bg="white",
+    fg="#1b4332"
+)
 
 seccion_energia = crear_seccion_menu(frame_menu_contenido, "ENERGÍA DE LA RASPBERRY")
 crear_boton_menu(
