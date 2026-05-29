@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, date
 import smtplib
 from email.message import EmailMessage
 
-# SAVIA_ACTUALIZADOR_INTERFAZ_V1
+# SAVIA_WIFI_IP_CORREOS_RECIENTES_V1
 
 # ==========================================
 # CONFIGURACIÓN UART
@@ -132,6 +132,136 @@ conectar_uart(forzar=True)
 
 
 # ==========================================
+# CONFIGURACIÓN DE CORREO / RED
+# ==========================================
+RUTA_EMAIL_ENV = "/home/savia/savia_email.env"
+RUTA_CORREOS_HISTORIAL = "/home/savia/savia_correos_recientes.json"
+
+
+def cargar_config_correo_desde_archivo(ruta=RUTA_EMAIL_ENV):
+    """Carga /home/savia/savia_email.env aunque la app no haya sido abierta con source.
+
+    Acepta líneas tipo:
+    export SAVIA_SMTP_USER="correo@gmail.com"
+    SAVIA_SMTP_PASS="clave"
+    """
+    try:
+        if not os.path.exists(ruta):
+            return False
+
+        with open(ruta, "r", encoding="utf-8") as archivo:
+            for linea in archivo:
+                linea = linea.strip()
+                if not linea or linea.startswith("#"):
+                    continue
+                if linea.startswith("export "):
+                    linea = linea[len("export "):].strip()
+                if "=" not in linea:
+                    continue
+
+                clave, valor = linea.split("=", 1)
+                clave = clave.strip()
+                valor = valor.strip().strip('"').strip("'")
+
+                if clave.startswith("SAVIA_SMTP_"):
+                    os.environ[clave] = valor
+        return True
+    except Exception as e:
+        print(f"No se pudo cargar configuración de correo: {e}")
+        return False
+
+
+def obtener_config_correo():
+    # Se vuelve a cargar por si el archivo fue corregido mientras la app está abierta.
+    cargar_config_correo_desde_archivo()
+    host = os.environ.get("SAVIA_SMTP_HOST", "smtp.gmail.com")
+    try:
+        port = int(os.environ.get("SAVIA_SMTP_PORT", "587"))
+    except Exception:
+        port = 587
+    user = os.environ.get("SAVIA_SMTP_USER", "").strip()
+    password = os.environ.get("SAVIA_SMTP_PASS", "").strip()
+    sender = os.environ.get("SAVIA_SMTP_FROM", user).strip()
+    return host, port, user, password, sender
+
+
+def estado_config_correo():
+    host, port, user, password, sender = obtener_config_correo()
+    faltantes = []
+    if not user:
+        faltantes.append("SAVIA_SMTP_USER")
+    if not password:
+        faltantes.append("SAVIA_SMTP_PASS")
+    if not sender:
+        faltantes.append("SAVIA_SMTP_FROM")
+
+    if faltantes:
+        return False, "Correo no configurado: falta " + ", ".join(faltantes)
+
+    return True, f"Correo activo: {user}"
+
+
+def cargar_correos_recientes():
+    try:
+        if not os.path.exists(RUTA_CORREOS_HISTORIAL):
+            return []
+        with open(RUTA_CORREOS_HISTORIAL, "r", encoding="utf-8") as archivo:
+            datos = json.load(archivo)
+        if not isinstance(datos, list):
+            return []
+        correos = []
+        for correo in datos:
+            correo = str(correo).strip()
+            if correo and "@" in correo and correo not in correos:
+                correos.append(correo)
+        return correos[:8]
+    except Exception as e:
+        print(f"No se pudo leer historial de correos: {e}")
+        return []
+
+
+def guardar_correo_reciente(correo):
+    correo = str(correo).strip()
+    if "@" not in correo or "." not in correo:
+        return
+    try:
+        correos = cargar_correos_recientes()
+        correos = [c for c in correos if c.lower() != correo.lower()]
+        correos.insert(0, correo)
+        correos = correos[:8]
+        with open(RUTA_CORREOS_HISTORIAL, "w", encoding="utf-8") as archivo:
+            json.dump(correos, archivo, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"No se pudo guardar correo reciente: {e}")
+
+
+def obtener_ip_raspberry():
+    try:
+        resultado = subprocess.check_output(["hostname", "-I"], text=True, timeout=3)
+        ips = [ip.strip() for ip in resultado.split() if ip.strip()]
+        for ip in ips:
+            if not ip.startswith("127."):
+                return ip
+    except Exception as e:
+        print(f"No se pudo obtener IP con hostname -I: {e}")
+
+    try:
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(1)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "Sin IP"
+
+
+# Carga inicial del correo, incluso si SAVIA se abrió sin source.
+cargar_config_correo_desde_archivo()
+
+
+# ==========================================
 # HISTORIAL Y EXPORTACIÓN CSV
 # ==========================================
 # El historial se guarda automáticamente cada vez que llega una lectura válida
@@ -153,11 +283,7 @@ CARPETA_EXPORTACIONES = os.environ.get(
 # export SAVIA_SMTP_USER="tu_correo@gmail.com"
 # export SAVIA_SMTP_PASS="tu_app_password"
 # export SAVIA_SMTP_FROM="tu_correo@gmail.com"
-SMTP_HOST = os.environ.get("SAVIA_SMTP_HOST", "smtp.gmail.com")
-SMTP_PORT = int(os.environ.get("SAVIA_SMTP_PORT", "587"))
-SMTP_USER = os.environ.get("SAVIA_SMTP_USER", "")
-SMTP_PASS = os.environ.get("SAVIA_SMTP_PASS", "")
-SMTP_FROM = os.environ.get("SAVIA_SMTP_FROM", SMTP_USER)
+SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM = obtener_config_correo()
 
 COLUMNAS_HISTORIAL = [
     "fecha_hora",
@@ -282,10 +408,13 @@ def generar_csv_exportacion(fecha_inicio, fecha_fin):
 
 
 def enviar_csv_por_correo(destinatario, ruta_csv, fecha_inicio, fecha_fin):
-    if not SMTP_USER or not SMTP_PASS or not SMTP_FROM:
+    host, port, user, password, sender = obtener_config_correo()
+
+    if not user or not password or not sender:
+        ok, estado = estado_config_correo()
         raise RuntimeError(
-            "El CSV se generó, pero el correo no está configurado en la Raspberry. "
-            "Configura SAVIA_SMTP_USER y SAVIA_SMTP_PASS para poder enviarlo automáticamente."
+            "El CSV se generó, pero el correo no está listo para enviar. "
+            f"{estado}. Revisa /home/savia/savia_email.env."
         )
 
     asunto = f"Historial de sensores SAVIA {fecha_inicio:%Y-%m-%d} a {fecha_fin:%Y-%m-%d}"
@@ -298,7 +427,7 @@ def enviar_csv_por_correo(destinatario, ruta_csv, fecha_inicio, fecha_fin):
     )
 
     mensaje = EmailMessage()
-    mensaje["From"] = SMTP_FROM
+    mensaje["From"] = sender
     mensaje["To"] = destinatario
     mensaje["Subject"] = asunto
     mensaje.set_content(cuerpo)
@@ -312,12 +441,22 @@ def enviar_csv_por_correo(destinatario, ruta_csv, fecha_inicio, fecha_fin):
             filename=os.path.basename(ruta_csv)
         )
 
-    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as smtp:
-        smtp.ehlo()
-        smtp.starttls()
-        smtp.ehlo()
-        smtp.login(SMTP_USER, SMTP_PASS)
-        smtp.send_message(mensaje)
+    try:
+        with smtplib.SMTP(host, port, timeout=30) as smtp:
+            smtp.ehlo()
+            smtp.starttls()
+            smtp.ehlo()
+            smtp.login(user, password)
+            smtp.send_message(mensaje)
+    except smtplib.SMTPAuthenticationError:
+        raise RuntimeError(
+            "No se pudo iniciar sesión en el correo configurado. "
+            "Revisa que SAVIA_SMTP_USER sea el Gmail correcto y que SAVIA_SMTP_PASS sea la contraseña de aplicación, sin espacios."
+        )
+    except smtplib.SMTPConnectError:
+        raise RuntimeError("No se pudo conectar con el servidor de correo. Revisa el internet de la Raspberry.")
+    except smtplib.SMTPException as e:
+        raise RuntimeError(f"Error del servidor de correo: {e}")
 
 
 # ==========================================
@@ -491,7 +630,17 @@ def abrir_config_wifi():
         font=("Segoe UI", 15, "bold"),
         bg="#2d6a4f",
         fg="white"
-    ).pack(side="left", padx=18)
+    ).pack(side="left", padx=(18, 12))
+
+    tk.Label(
+        frame_wifi_header,
+        text=f"IP Raspberry: {obtener_ip_raspberry()}",
+        font=("Segoe UI", 11, "bold"),
+        bg="#40916c",
+        fg="white",
+        padx=12,
+        pady=4
+    ).pack(side="left", padx=4)
 
     tk.Button(
         frame_wifi_header,
@@ -3106,6 +3255,8 @@ def abrir_exportar_datos():
             fg="#2d6a4f" if exito else "#e63946"
         )
         if exito:
+            guardar_correo_reciente(entry_correo.get().strip())
+            actualizar_correos_recientes()
             mostrar_confirmacion_reporte(mensaje)
         else:
             messagebox.showwarning("Exportación", mensaje)
@@ -3194,13 +3345,74 @@ def abrir_exportar_datos():
     entry_correo.bind("<FocusIn>", lambda e: marcar_campo(entry_correo))
     entry_correo.bind("<Button-1>", lambda e: marcar_campo(entry_correo))
 
+    correo_ok, texto_estado_correo = estado_config_correo()
+    lbl_estado_correo_config = tk.Label(
+        frame_form,
+        text=texto_estado_correo,
+        font=("Segoe UI", 8, "bold"),
+        bg="#f4f7f6",
+        fg="#2d6a4f" if correo_ok else "#e63946",
+        anchor="w"
+    )
+    lbl_estado_correo_config.grid(row=1, column=1, columnspan=4, sticky="ew", pady=(0, 1))
+
+    frame_correos_recientes = tk.Frame(frame_form, bg="#f4f7f6")
+    frame_correos_recientes.grid(row=2, column=1, columnspan=4, sticky="ew", pady=(0, 3))
+
+    def seleccionar_correo_reciente(correo):
+        entry_correo.delete(0, "end")
+        entry_correo.insert(0, correo)
+        marcar_campo(entry_correo)
+
+    def actualizar_correos_recientes():
+        for w in frame_correos_recientes.winfo_children():
+            w.destroy()
+        correos = cargar_correos_recientes()
+        if not correos:
+            tk.Label(
+                frame_correos_recientes,
+                text="Sin correos recientes.",
+                font=("Segoe UI", 8),
+                bg="#f4f7f6",
+                fg="#6c757d"
+            ).pack(side="left")
+            return
+
+        tk.Label(
+            frame_correos_recientes,
+            text="Recientes:",
+            font=("Segoe UI", 8, "bold"),
+            bg="#f4f7f6",
+            fg="#1b4332"
+        ).pack(side="left", padx=(0, 4))
+
+        for correo in correos[:3]:
+            tk.Button(
+                frame_correos_recientes,
+                text=correo,
+                font=("Segoe UI", 8, "bold"),
+                bg="#eaf4f4",
+                fg="#1b4332",
+                activebackground="#d8f3dc",
+                activeforeground="#1b4332",
+                relief="flat",
+                bd=0,
+                padx=6,
+                command=lambda c=correo: seleccionar_correo_reciente(c)
+            ).pack(side="left", padx=2)
+
+    actualizar_correos_recientes()
+    correos_iniciales = cargar_correos_recientes()
+    if correos_iniciales:
+        entry_correo.insert(0, correos_iniciales[0])
+
     tk.Label(
         frame_form,
         text="Desde:",
         font=("Segoe UI", 10, "bold"),
         bg="#f4f7f6",
         fg="#1b4332"
-    ).grid(row=1, column=0, sticky="w", padx=(0, 8), pady=5)
+    ).grid(row=3, column=0, sticky="w", padx=(0, 8), pady=5)
 
     btn_fecha_inicio = tk.Button(
         frame_form,
@@ -3212,7 +3424,7 @@ def abrir_exportar_datos():
     )
     # Labels visuales para fechas, con botones táctiles grandes.
     caja_inicio = tk.Frame(frame_form, bg="white", highlightbackground="#b7e4c7", highlightthickness=2)
-    caja_inicio.grid(row=1, column=1, sticky="ew", pady=5)
+    caja_inicio.grid(row=3, column=1, sticky="ew", pady=5)
     lbl_fecha_inicio = tk.Label(
         caja_inicio,
         text="",
@@ -3237,10 +3449,10 @@ def abrir_exportar_datos():
         font=("Segoe UI", 10, "bold"),
         bg="#f4f7f6",
         fg="#1b4332"
-    ).grid(row=1, column=2, sticky="e", padx=(12, 8), pady=5)
+    ).grid(row=3, column=2, sticky="e", padx=(12, 8), pady=5)
 
     caja_fin = tk.Frame(frame_form, bg="white", highlightbackground="#b7e4c7", highlightthickness=2)
-    caja_fin.grid(row=1, column=3, sticky="ew", pady=5)
+    caja_fin.grid(row=3, column=3, sticky="ew", pady=5)
     lbl_fecha_fin = tk.Label(
         caja_fin,
         text="",
