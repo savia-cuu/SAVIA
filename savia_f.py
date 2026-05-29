@@ -19,7 +19,7 @@ import smtplib
 from email.message import EmailMessage
 
 # SAVIA_WIFI_IP_CORREOS_RECIENTES_V1
-# SAVIA_MENU_SCROLL_BAR_VISIBLE_V1
+# SAVIA_MENU_SCROLLBAR_REAL_VISIBLE_FIX_V2
 
 # ==========================================
 # CONFIGURACIÓN UART
@@ -3986,9 +3986,9 @@ def _menu_touch_mover(event):
 
 
 def _vincular_scroll_menu(widget):
-    # No enlazar el scroll táctil a controles deslizables,
-    # porque si no el gesto horizontal del slider se interpreta como scroll del menú.
-    if isinstance(widget, tk.Scale):
+    # No enlazar el scroll táctil a controles que necesitan su propio gesto,
+    # por ejemplo el slider de brillo y la barra de scroll visible.
+    if isinstance(widget, tk.Scale) or getattr(widget, "_no_menu_touch_scroll", False):
         return
 
     widget.bind("<MouseWheel>", _menu_mousewheel, add="+")
@@ -4101,32 +4101,111 @@ canvas_menu = tk.Canvas(
     highlightthickness=0,
     bd=0
 )
-# Barra de desplazamiento visible para pantalla táctil.
-# Se deja ancha para que el usuario pueda tomarla con el dedo.
-scrollbar_menu = tk.Scrollbar(
+
+# Barra de desplazamiento visible REAL para pantalla táctil.
+# No usamos tk.Scrollbar porque en algunas instalaciones de Tk/Ubuntu
+# se renderiza demasiado delgada o queda invisible con temas del sistema.
+# Esta barra se dibuja manualmente con Canvas, por eso siempre se ve.
+frame_barra_menu = tk.Frame(
     frame_menu_scroll,
-    orient="vertical",
-    command=canvas_menu.yview,
-    width=32,
-    bg="#52b788",
-    activebackground="#2d6a4f",
-    troughcolor="#e9f5ef",
-    relief="flat",
-    bd=0,
-    elementborderwidth=0
+    bg="#e9f5ef",
+    width=34,
+    highlightbackground="#95d5b2",
+    highlightthickness=1
 )
+frame_barra_menu._no_menu_touch_scroll = True
+frame_barra_menu.pack_propagate(False)
+
+canvas_barra_menu = tk.Canvas(
+    frame_barra_menu,
+    width=30,
+    bg="#e9f5ef",
+    highlightthickness=0,
+    bd=0,
+    cursor="hand2"
+)
+canvas_barra_menu._no_menu_touch_scroll = True
+canvas_barra_menu.pack(fill="both", expand=True, padx=2, pady=4)
+
+thumb_menu = canvas_barra_menu.create_rectangle(
+    5, 5, 25, 70,
+    fill="#2d6a4f",
+    outline="#1b4332",
+    width=1
+)
+
 frame_menu_contenido = tk.Frame(canvas_menu, bg="#f8fbfa")
 
 ventana_menu_canvas = canvas_menu.create_window((0, 0), window=frame_menu_contenido, anchor="nw")
-canvas_menu.configure(yscrollcommand=scrollbar_menu.set)
+
+
+def _actualizar_barra_menu(first=0.0, last=1.0):
+    try:
+        first = float(first)
+        last = float(last)
+        alto = max(1, canvas_barra_menu.winfo_height())
+        margen = 5
+        area = max(1, alto - (margen * 2))
+        y1 = margen + int(first * area)
+        y2 = margen + int(last * area)
+
+        # Hacer el indicador suficientemente grande para tocarlo con el dedo.
+        minimo = 48
+        if (y2 - y1) < minimo:
+            centro = (y1 + y2) // 2
+            y1 = max(margen, centro - minimo // 2)
+            y2 = min(alto - margen, y1 + minimo)
+            y1 = max(margen, y2 - minimo)
+
+        canvas_barra_menu.coords(thumb_menu, 5, y1, 25, y2)
+
+        # Si no hay suficiente contenido para scroll, dejar la barra tenue.
+        if first <= 0.001 and last >= 0.999:
+            canvas_barra_menu.itemconfig(thumb_menu, fill="#b7e4c7", outline="#95d5b2")
+        else:
+            canvas_barra_menu.itemconfig(thumb_menu, fill="#2d6a4f", outline="#1b4332")
+    except Exception:
+        pass
+
+
+def _yscroll_menu(first, last):
+    _actualizar_barra_menu(first, last)
+
+
+def _mover_barra_menu(event):
+    try:
+        alto = max(1, canvas_barra_menu.winfo_height())
+        margen = 5
+        area = max(1, alto - (margen * 2))
+        coords = canvas_barra_menu.coords(thumb_menu)
+        thumb_alto = max(48, coords[3] - coords[1]) if len(coords) == 4 else 48
+        usable = max(1, area - thumb_alto)
+        y = min(max(event.y, margen + thumb_alto / 2), alto - margen - thumb_alto / 2)
+        fraccion = (y - margen - thumb_alto / 2) / usable
+        canvas_menu.yview_moveto(max(0.0, min(1.0, fraccion)))
+    except Exception:
+        pass
+    return "break"
+
+
+canvas_barra_menu.bind("<ButtonPress-1>", _mover_barra_menu)
+canvas_barra_menu.bind("<B1-Motion>", _mover_barra_menu)
+
+canvas_menu.configure(yscrollcommand=_yscroll_menu)
 
 canvas_menu.pack(side="left", fill="both", expand=True, padx=(8, 2))
-scrollbar_menu.pack(side="right", fill="y", padx=(3, 10), pady=(4, 4))
+frame_barra_menu.pack(side="right", fill="y", padx=(3, 10), pady=(4, 4))
 
 
 def _actualizar_scroll_menu(event=None):
     canvas_menu.configure(scrollregion=canvas_menu.bbox("all"))
     canvas_menu.itemconfig(ventana_menu_canvas, width=canvas_menu.winfo_width())
+    try:
+        # Forzar refresco de la barra después de cambios de tamaño/contenido.
+        first, last = canvas_menu.yview()
+        _actualizar_barra_menu(first, last)
+    except Exception:
+        pass
 
 
 frame_menu_contenido.bind("<Configure>", _actualizar_scroll_menu)
