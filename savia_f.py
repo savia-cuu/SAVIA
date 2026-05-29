@@ -19,7 +19,7 @@ import smtplib
 from email.message import EmailMessage
 
 # SAVIA_WIFI_IP_CORREOS_RECIENTES_V1
-# SAVIA_MENU_SCROLL_TACTIL_NORMAL_FIX_V2
+# SAVIA_MENU_BARRA_SCROLL_FINAL_V1
 
 # ==========================================
 # CONFIGURACIÓN UART
@@ -3850,7 +3850,7 @@ def abrir_actualizar_savia():
 menu_abierto = False
 menu_animando = False
 ALTURA_MENU = 405
-ANCHO_MENU = 385
+ANCHO_MENU = 405
 PASO_ANIMACION = 35
 
 frame_menu_desplegable = tk.Frame(
@@ -3973,41 +3973,16 @@ def _menu_touch_inicio(event):
 def _menu_touch_mover(event):
     global menu_touch_last_y_root, menu_touch_total_dy, menu_touch_moved
 
+    # IMPORTANTE:
+    # El desplazamiento táctil del contenido se desactiva para evitar brincos.
+    # En pantalla táctil el menú se controla con la barra derecha, como en una app.
+    # Este movimiento solo sirve para detectar que el usuario arrastró y no ejecutar
+    # accidentalmente un botón del menú.
     dy = event.y_root - menu_touch_last_y_root
     menu_touch_total_dy += dy
 
-    # Zona muerta: si solo tocó el botón, no se mueve el menú.
-    if not menu_touch_moved and abs(menu_touch_total_dy) < MENU_TOUCH_UMBRAL_PX:
-        menu_touch_last_y_root = event.y_root
-        return "break"
-
-    menu_touch_moved = True
-
-    try:
-        bbox = canvas_menu.bbox("all")
-        if not bbox:
-            menu_touch_last_y_root = event.y_root
-            return "break"
-
-        alto_contenido = max(1, bbox[3] - bbox[1])
-        alto_visible = max(1, canvas_menu.winfo_height())
-        scrollable_px = max(1, alto_contenido - alto_visible)
-
-        if alto_contenido <= alto_visible:
-            menu_touch_last_y_root = event.y_root
-            return "break"
-
-        posicion_actual = canvas_menu.yview()[0]
-
-        # Movimiento natural tipo celular:
-        # dedo hacia arriba => dy negativo => yview aumenta => baja el contenido.
-        # dedo hacia abajo => dy positivo => yview baja => sube el contenido.
-        nueva_posicion = posicion_actual - ((dy * MENU_SCROLL_FACTOR) / scrollable_px)
-        nueva_posicion = max(0.0, min(1.0, nueva_posicion))
-        canvas_menu.yview_moveto(nueva_posicion)
-
-    except Exception:
-        pass
+    if abs(menu_touch_total_dy) >= MENU_TOUCH_UMBRAL_PX:
+        menu_touch_moved = True
 
     menu_touch_last_y_root = event.y_root
     return "break"
@@ -4120,7 +4095,7 @@ tk.Label(
 
 tk.Label(
     frame_menu_desplegable,
-    text="Desliza dentro del panel para ver más opciones",
+    text="Usa la barra derecha para desplazarte por el menú",
     font=("Segoe UI", 8, "bold"),
     bg="#f8fbfa",
     fg="#6c757d"
@@ -4142,7 +4117,7 @@ canvas_menu = tk.Canvas(
 # Esta barra se dibuja manualmente con Canvas, por eso siempre se ve.
 frame_barra_menu = tk.Frame(
     frame_menu_scroll,
-    bg="#e9f5ef",
+    bg="#edf6f0",
     width=34,
     highlightbackground="#95d5b2",
     highlightthickness=1
@@ -4153,7 +4128,7 @@ frame_barra_menu.pack_propagate(False)
 canvas_barra_menu = tk.Canvas(
     frame_barra_menu,
     width=30,
-    bg="#e9f5ef",
+    bg="#edf6f0",
     highlightthickness=0,
     bd=0,
     cursor="hand2"
@@ -4161,8 +4136,17 @@ canvas_barra_menu = tk.Canvas(
 canvas_barra_menu._no_menu_touch_scroll = True
 canvas_barra_menu.pack(fill="both", expand=True, padx=2, pady=4)
 
+# Canal visual de la barra. Siempre visible.
+track_menu = canvas_barra_menu.create_rectangle(
+    12, 8, 18, 320,
+    fill="#d8e8df",
+    outline="#d8e8df",
+    width=0
+)
+
+# Indicador deslizable. Es ancho para que se pueda agarrar con dedo.
 thumb_menu = canvas_barra_menu.create_rectangle(
-    5, 5, 25, 70,
+    5, 28, 25, 96,
     fill="#2d6a4f",
     outline="#1b4332",
     width=1
@@ -4191,6 +4175,7 @@ def _actualizar_barra_menu(first=0.0, last=1.0):
             y2 = min(alto - margen, y1 + minimo)
             y1 = max(margen, y2 - minimo)
 
+        canvas_barra_menu.coords(track_menu, 12, margen, 18, alto - margen)
         canvas_barra_menu.coords(thumb_menu, 5, y1, 25, y2)
 
         # Si no hay suficiente contenido para scroll, dejar la barra tenue.
@@ -4228,8 +4213,8 @@ canvas_barra_menu.bind("<B1-Motion>", _mover_barra_menu)
 canvas_menu.configure(yscrollcommand=_yscroll_menu)
 
 canvas_menu.pack(side="left", fill="both", expand=True, padx=(8, 2))
-# Barra visible retirada: el menú conserva la posición y se desplaza con arrastre táctil
-# frame_barra_menu.pack(side="right", fill="y", padx=(3, 10), pady=(4, 4))
+# Barra visible fija: se usa para subir/bajar el menú sin brincos táctiles.
+frame_barra_menu.pack(side="right", fill="y", padx=(3, 10), pady=(4, 4))
 
 
 def _actualizar_scroll_menu(event=None):
