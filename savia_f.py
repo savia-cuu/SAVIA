@@ -19,7 +19,7 @@ import smtplib
 from email.message import EmailMessage
 
 # SAVIA_WIFI_IP_CORREOS_RECIENTES_V1
-# SAVIA_MENU_BARRA_SCROLL_FINAL_V1
+# SAVIA_MENU_SCROLL_BAR_NATIVO_FINAL_V1
 
 # ==========================================
 # CONFIGURACIÓN UART
@@ -3937,71 +3937,78 @@ def ejecutar_desde_menu(funcion):
 
 
 # Control táctil del scroll del menú.
-# FIX: scroll incremental. Cada nuevo toque empieza desde la posición actual
-# del menú y cada movimiento usa únicamente el desplazamiento desde el último
-# punto del dedo. Así NO brinca, NO regresa a posiciones anteriores y se puede
-# llegar naturalmente al inicio o al final.
+# SAVIA_MENU_SCROLL_BAR_NATIVO_FINAL_V1
+# Scroll corregido: NO usa yview_moveto con la posición del dedo.
+# Usa desplazamiento incremental desde donde quedó el menú, como en una app.
 menu_touch_last_y_root = 0
 menu_touch_total_dy = 0
 menu_touch_moved = False
-MENU_TOUCH_UMBRAL_PX = 18
-MENU_SCROLL_FACTOR = 0.85
+menu_scroll_remainder = 0.0
+MENU_TOUCH_UMBRAL_PX = 10
+MENU_SCROLL_PIXELS_POR_UNIDAD = 24.0
 
 
-def _scroll_menu(delta):
+def _menu_scroll_units(units):
     try:
-        canvas_menu.yview_scroll(delta, "units")
+        canvas_menu.yview_scroll(int(units), "units")
+        _actualizar_barra_menu_desde_canvas()
     except Exception:
         pass
 
 
 def _menu_mousewheel(event):
-    if event.delta:
-        _scroll_menu(-1 if event.delta > 0 else 1)
+    try:
+        if event.delta:
+            _menu_scroll_units(-1 if event.delta > 0 else 1)
+    except Exception:
+        pass
     return "break"
 
 
 def _menu_touch_inicio(event):
-    global menu_touch_last_y_root, menu_touch_total_dy, menu_touch_moved
-
+    global menu_touch_last_y_root, menu_touch_total_dy, menu_touch_moved, menu_scroll_remainder
     menu_touch_last_y_root = event.y_root
     menu_touch_total_dy = 0
     menu_touch_moved = False
+    menu_scroll_remainder = 0.0
     return "break"
 
 
 def _menu_touch_mover(event):
-    global menu_touch_last_y_root, menu_touch_total_dy, menu_touch_moved
-
-    # IMPORTANTE:
-    # El desplazamiento táctil del contenido se desactiva para evitar brincos.
-    # En pantalla táctil el menú se controla con la barra derecha, como en una app.
-    # Este movimiento solo sirve para detectar que el usuario arrastró y no ejecutar
-    # accidentalmente un botón del menú.
+    global menu_touch_last_y_root, menu_touch_total_dy, menu_touch_moved, menu_scroll_remainder
     dy = event.y_root - menu_touch_last_y_root
+    menu_touch_last_y_root = event.y_root
     menu_touch_total_dy += dy
 
     if abs(menu_touch_total_dy) >= MENU_TOUCH_UMBRAL_PX:
         menu_touch_moved = True
 
-    menu_touch_last_y_root = event.y_root
+    # Finger up => contenido baja hacia opciones inferiores.
+    # Finger down => contenido sube hacia opciones superiores.
+    menu_scroll_remainder += (-dy / MENU_SCROLL_PIXELS_POR_UNIDAD)
+    unidades = int(menu_scroll_remainder)
+    if unidades != 0:
+        _menu_scroll_units(unidades)
+        menu_scroll_remainder -= unidades
+
+    return "break"
+
+
+def _menu_touch_fin(event=None):
     return "break"
 
 
 def _vincular_scroll_menu(widget):
-    # No enlazar el scroll táctil a controles que necesitan su propio gesto
-    # o a tarjetas que ya tienen bindings manuales. Esto evita que un mismo
-    # arrastre se procese dos veces y que el menú brinque.
-    if (
-        isinstance(widget, tk.Scale)
-        or getattr(widget, "_no_menu_touch_scroll", False)
-        or getattr(widget, "_menu_card_touch_bound", False)
-    ):
+    # Evitar interferir con sliders o la barra de scroll.
+    if isinstance(widget, tk.Scale) or getattr(widget, "_no_menu_touch_scroll", False):
         return
 
-    widget.bind("<MouseWheel>", _menu_mousewheel, add="+")
-    widget.bind("<ButtonPress-1>", _menu_touch_inicio, add="+")
-    widget.bind("<B1-Motion>", _menu_touch_mover, add="+")
+    if not getattr(widget, "_menu_scroll_bound", False):
+        widget._menu_scroll_bound = True
+        widget.bind("<MouseWheel>", _menu_mousewheel)
+        widget.bind("<ButtonPress-1>", _menu_touch_inicio)
+        widget.bind("<B1-Motion>", _menu_touch_mover)
+        widget.bind("<ButtonRelease-1>", _menu_touch_fin)
 
     for hijo in widget.winfo_children():
         _vincular_scroll_menu(hijo)
@@ -4055,14 +4062,14 @@ def crear_boton_menu(parent, texto, subtitulo, comando, bg="white", fg="#1b4332"
             bg=bg,
             fg="#6c757d" if fg != "white" else "#f8f9fa",
             anchor="w",
-            wraplength=285,
+            wraplength=300,
             justify="left",
             cursor="hand2"
         )
         lbl_subtitulo.pack(fill="x", pady=(3, 0))
 
     def soltar(event=None):
-        # En touch: si el usuario arrastró para hacer scroll, NO se ejecuta la opción.
+        global menu_touch_moved
         if not menu_touch_moved:
             ejecutar_desde_menu(comando)
         return "break"
@@ -4072,11 +4079,11 @@ def crear_boton_menu(parent, texto, subtitulo, comando, bg="white", fg="#1b4332"
         widgets.append(lbl_subtitulo)
 
     for w in widgets:
-        w._menu_card_touch_bound = True
+        w._menu_scroll_bound = True
+        w.bind("<MouseWheel>", _menu_mousewheel)
         w.bind("<ButtonPress-1>", _menu_touch_inicio)
         w.bind("<B1-Motion>", _menu_touch_mover)
         w.bind("<ButtonRelease-1>", soltar)
-        w.bind("<MouseWheel>", _menu_mousewheel)
 
     return tarjeta
 
@@ -4093,16 +4100,8 @@ tk.Label(
     fg="white"
 ).pack(side="left", padx=16)
 
-tk.Label(
-    frame_menu_desplegable,
-    text="Usa la barra derecha para desplazarte por el menú",
-    font=("Segoe UI", 8, "bold"),
-    bg="#f8fbfa",
-    fg="#6c757d"
-).pack(fill="x", padx=14, pady=(8, 2))
-
 frame_menu_scroll = tk.Frame(frame_menu_desplegable, bg="#f8fbfa")
-frame_menu_scroll.pack(fill="both", expand=True, padx=0, pady=(0, 8))
+frame_menu_scroll.pack(fill="both", expand=True, padx=0, pady=(8, 8))
 
 canvas_menu = tk.Canvas(
     frame_menu_scroll,
@@ -4110,79 +4109,65 @@ canvas_menu = tk.Canvas(
     highlightthickness=0,
     bd=0
 )
+canvas_menu.pack(fill="both", expand=True, padx=(8, 42), pady=0)
 
-# Barra de desplazamiento visible REAL para pantalla táctil.
-# No usamos tk.Scrollbar porque en algunas instalaciones de Tk/Ubuntu
-# se renderiza demasiado delgada o queda invisible con temas del sistema.
-# Esta barra se dibuja manualmente con Canvas, por eso siempre se ve.
-frame_barra_menu = tk.Frame(
-    frame_menu_scroll,
-    bg="#edf6f0",
-    width=34,
-    highlightbackground="#95d5b2",
-    highlightthickness=1
-)
-frame_barra_menu._no_menu_touch_scroll = True
-frame_barra_menu.pack_propagate(False)
+frame_menu_contenido = tk.Frame(canvas_menu, bg="#f8fbfa")
+ventana_menu_canvas = canvas_menu.create_window((0, 0), window=frame_menu_contenido, anchor="nw")
 
+# Barra lateral derecha visible y arrastrable, independiente del tema de Ubuntu.
 canvas_barra_menu = tk.Canvas(
-    frame_barra_menu,
-    width=30,
-    bg="#edf6f0",
-    highlightthickness=0,
+    frame_menu_scroll,
+    bg="#eef7f1",
+    highlightthickness=1,
+    highlightbackground="#b7e4c7",
     bd=0,
     cursor="hand2"
 )
 canvas_barra_menu._no_menu_touch_scroll = True
-canvas_barra_menu.pack(fill="both", expand=True, padx=2, pady=4)
+track_menu = canvas_barra_menu.create_rectangle(12, 8, 18, 300, fill="#d8f3dc", outline="#d8f3dc")
+thumb_menu = canvas_barra_menu.create_rectangle(5, 20, 25, 95, fill="#2d6a4f", outline="#1b4332")
+barra_drag_offset = 0
 
-# Canal visual de la barra. Siempre visible.
-track_menu = canvas_barra_menu.create_rectangle(
-    12, 8, 18, 320,
-    fill="#d8e8df",
-    outline="#d8e8df",
-    width=0
-)
 
-# Indicador deslizable. Es ancho para que se pueda agarrar con dedo.
-thumb_menu = canvas_barra_menu.create_rectangle(
-    5, 28, 25, 96,
-    fill="#2d6a4f",
-    outline="#1b4332",
-    width=1
-)
-
-frame_menu_contenido = tk.Frame(canvas_menu, bg="#f8fbfa")
-
-ventana_menu_canvas = canvas_menu.create_window((0, 0), window=frame_menu_contenido, anchor="nw")
+def _colocar_barra_menu(event=None):
+    try:
+        alto = max(80, frame_menu_scroll.winfo_height() - 12)
+        canvas_barra_menu.place(relx=1.0, x=-8, y=6, width=32, height=alto, anchor="ne")
+        canvas_barra_menu.tk.call("raise", canvas_barra_menu._w)
+        _actualizar_barra_menu_desde_canvas()
+    except Exception:
+        pass
 
 
 def _actualizar_barra_menu(first=0.0, last=1.0):
     try:
         first = float(first)
         last = float(last)
-        alto = max(1, canvas_barra_menu.winfo_height())
-        margen = 5
-        area = max(1, alto - (margen * 2))
+        alto = max(80, canvas_barra_menu.winfo_height())
+        margen = 8
+        area = max(1, alto - margen * 2)
         y1 = margen + int(first * area)
         y2 = margen + int(last * area)
-
-        # Hacer el indicador suficientemente grande para tocarlo con el dedo.
-        minimo = 48
+        minimo = 54
         if (y2 - y1) < minimo:
             centro = (y1 + y2) // 2
             y1 = max(margen, centro - minimo // 2)
             y2 = min(alto - margen, y1 + minimo)
             y1 = max(margen, y2 - minimo)
-
-        canvas_barra_menu.coords(track_menu, 12, margen, 18, alto - margen)
-        canvas_barra_menu.coords(thumb_menu, 5, y1, 25, y2)
-
-        # Si no hay suficiente contenido para scroll, dejar la barra tenue.
+        canvas_barra_menu.coords(track_menu, 13, margen, 19, alto - margen)
+        canvas_barra_menu.coords(thumb_menu, 5, y1, 27, y2)
         if first <= 0.001 and last >= 0.999:
-            canvas_barra_menu.itemconfig(thumb_menu, fill="#b7e4c7", outline="#95d5b2")
+            canvas_barra_menu.itemconfig(thumb_menu, fill="#95d5b2", outline="#74c69d")
         else:
             canvas_barra_menu.itemconfig(thumb_menu, fill="#2d6a4f", outline="#1b4332")
+    except Exception:
+        pass
+
+
+def _actualizar_barra_menu_desde_canvas():
+    try:
+        first, last = canvas_menu.yview()
+        _actualizar_barra_menu(first, last)
     except Exception:
         pass
 
@@ -4191,49 +4176,60 @@ def _yscroll_menu(first, last):
     _actualizar_barra_menu(first, last)
 
 
-def _mover_barra_menu(event):
+def _barra_menu_press(event):
+    global barra_drag_offset
     try:
-        alto = max(1, canvas_barra_menu.winfo_height())
-        margen = 5
-        area = max(1, alto - (margen * 2))
         coords = canvas_barra_menu.coords(thumb_menu)
-        thumb_alto = max(48, coords[3] - coords[1]) if len(coords) == 4 else 48
-        usable = max(1, area - thumb_alto)
-        y = min(max(event.y, margen + thumb_alto / 2), alto - margen - thumb_alto / 2)
-        fraccion = (y - margen - thumb_alto / 2) / usable
-        canvas_menu.yview_moveto(max(0.0, min(1.0, fraccion)))
+        if len(coords) == 4 and coords[1] <= event.y <= coords[3]:
+            barra_drag_offset = event.y - coords[1]
+        else:
+            barra_drag_offset = 27
+        _barra_menu_drag(event)
     except Exception:
         pass
     return "break"
 
 
-canvas_barra_menu.bind("<ButtonPress-1>", _mover_barra_menu)
-canvas_barra_menu.bind("<B1-Motion>", _mover_barra_menu)
+def _barra_menu_drag(event):
+    try:
+        alto = max(80, canvas_barra_menu.winfo_height())
+        margen = 8
+        coords = canvas_barra_menu.coords(thumb_menu)
+        thumb_alto = max(54, coords[3] - coords[1]) if len(coords) == 4 else 54
+        usable = max(1, alto - (2 * margen) - thumb_alto)
+        y1 = event.y - barra_drag_offset
+        y1 = max(margen, min(alto - margen - thumb_alto, y1))
+        fraccion = (y1 - margen) / usable
+        canvas_menu.yview_moveto(max(0.0, min(1.0, fraccion)))
+        _actualizar_barra_menu_desde_canvas()
+    except Exception:
+        pass
+    return "break"
 
+
+canvas_barra_menu.bind("<ButtonPress-1>", _barra_menu_press)
+canvas_barra_menu.bind("<B1-Motion>", _barra_menu_drag)
+canvas_barra_menu.bind("<MouseWheel>", _menu_mousewheel)
 canvas_menu.configure(yscrollcommand=_yscroll_menu)
-
-canvas_menu.pack(side="left", fill="both", expand=True, padx=(8, 2))
-# Barra visible fija: se usa para subir/bajar el menú sin brincos táctiles.
-frame_barra_menu.pack(side="right", fill="y", padx=(3, 10), pady=(4, 4))
 
 
 def _actualizar_scroll_menu(event=None):
-    canvas_menu.configure(scrollregion=canvas_menu.bbox("all"))
-    canvas_menu.itemconfig(ventana_menu_canvas, width=canvas_menu.winfo_width())
     try:
-        # Forzar refresco de la barra después de cambios de tamaño/contenido.
-        first, last = canvas_menu.yview()
-        _actualizar_barra_menu(first, last)
+        canvas_menu.configure(scrollregion=canvas_menu.bbox("all"))
+        canvas_menu.itemconfig(ventana_menu_canvas, width=canvas_menu.winfo_width())
+        _colocar_barra_menu()
+        _actualizar_barra_menu_desde_canvas()
     except Exception:
         pass
 
 
 frame_menu_contenido.bind("<Configure>", _actualizar_scroll_menu)
 canvas_menu.bind("<Configure>", _actualizar_scroll_menu)
+frame_menu_scroll.bind("<Configure>", _colocar_barra_menu)
 canvas_menu.bind("<MouseWheel>", _menu_mousewheel)
 canvas_menu.bind("<ButtonPress-1>", _menu_touch_inicio)
 canvas_menu.bind("<B1-Motion>", _menu_touch_mover)
-
+canvas_menu.bind("<ButtonRelease-1>", _menu_touch_fin)
 seccion_reportes = crear_seccion_menu(frame_menu_contenido, "REPORTES")
 crear_boton_menu(
     seccion_reportes,
@@ -4377,8 +4373,8 @@ crear_boton_menu(
 )
 
 
-# Vincular el gesto de scroll a todo el contenido del menú, no solo al canvas.
-_vincular_scroll_menu(frame_menu_desplegable)
+# Vincular scroll táctil al contenido del menú una vez que todos los widgets existen.
+_vincular_scroll_menu(frame_menu_contenido)
 
 btn_menu = tk.Button(
     frame_header_menu,
