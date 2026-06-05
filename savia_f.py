@@ -11,10 +11,12 @@ import wave
 import struct
 import threading
 import csv
+import sqlite3
 import os
 import json
 import calendar
 from datetime import datetime, timedelta, date
+from pathlib import Path
 import smtplib
 from email.message import EmailMessage
 import urllib.request
@@ -23,6 +25,7 @@ import urllib.error
 # SAVIA_WIFI_IP_CORREOS_RECIENTES_V1
 # SAVIA_MENU_SCROLL_BAR_NATIVO_FINAL_V1
 # SAVIA_THINGSBOARD_TELEMETRIA_V1
+# SAVIA_SQLITE_CSV_DOBLE_HISTORIAL_V1
 
 # ==========================================
 # CONFIGURACIÓN UART
@@ -428,6 +431,122 @@ COLUMNAS_HISTORIAL = [
     "dato_original"
 ]
 
+# ==========================================
+# SQLITE + CSV LOCAL DOBLE HISTORIAL
+# ==========================================
+# SQLite será la base principal para la página web.
+# El CSV sigue funcionando como respaldo simple para Excel/exportaciones.
+CARPETA_DATOS_SAVIA = os.environ.get(
+    "SAVIA_CARPETA_DATOS",
+    "/home/savia/datos_savia"
+)
+
+RUTA_SQLITE_HISTORIAL = os.environ.get(
+    "SAVIA_SQLITE_HISTORIAL",
+    os.path.join(CARPETA_DATOS_SAVIA, "savia_datos.db")
+)
+
+# Copia secundaria del CSV dentro de datos_savia para que todo quede ordenado.
+RUTA_CSV_RESPALDO_LOCAL = os.environ.get(
+    "SAVIA_CSV_RESPALDO_LOCAL",
+    os.path.join(CARPETA_DATOS_SAVIA, "savia_historial_sensores.csv")
+)
+
+
+def asegurar_directorio_datos():
+    try:
+        os.makedirs(CARPETA_DATOS_SAVIA, exist_ok=True)
+        os.makedirs(CARPETA_EXPORTACIONES, exist_ok=True)
+    except Exception as e:
+        print(f"No se pudieron crear carpetas de datos SAVIA: {e}")
+
+
+def asegurar_sqlite_historial():
+    """Crea la base SQLite y su tabla principal si aún no existen."""
+    try:
+        asegurar_directorio_datos()
+        with sqlite3.connect(RUTA_SQLITE_HISTORIAL, timeout=10) as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS lecturas (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    fecha_hora TEXT NOT NULL,
+                    fecha TEXT NOT NULL,
+                    hora TEXT NOT NULL,
+                    nodo INTEGER NOT NULL,
+                    humedad_suelo_1_pct REAL,
+                    humedad_suelo_2_pct REAL,
+                    humedad_suelo_3_pct REAL,
+                    promedio_suelo_pct REAL,
+                    temperatura_aire_c REAL,
+                    humedad_aire_pct REAL,
+                    puerto_uart TEXT,
+                    dato_original TEXT,
+                    creado_epoch REAL NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_lecturas_fecha_nodo
+                ON lecturas(fecha, nodo)
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_lecturas_fecha_hora
+                ON lecturas(fecha_hora)
+            """)
+            conn.commit()
+    except Exception as e:
+        print(f"Error preparando SQLite SAVIA: {e}")
+
+
+def guardar_datos_sqlite(nodo, v1, v2, v3, prom, temp, hum, dato_original, fecha_hora, fecha, hora):
+    """Guarda una lectura en SQLite. Si falla, no detiene la interfaz."""
+    try:
+        asegurar_sqlite_historial()
+        with sqlite3.connect(RUTA_SQLITE_HISTORIAL, timeout=10) as conn:
+            conn.execute("""
+                INSERT INTO lecturas (
+                    fecha_hora, fecha, hora, nodo,
+                    humedad_suelo_1_pct, humedad_suelo_2_pct, humedad_suelo_3_pct,
+                    promedio_suelo_pct, temperatura_aire_c, humedad_aire_pct,
+                    puerto_uart, dato_original, creado_epoch
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                fecha_hora, fecha, hora, int(nodo),
+                float(v1), float(v2), float(v3),
+                float(prom), float(temp), float(hum),
+                puerto_actual if puerto_actual else "",
+                dato_original,
+                time.time()
+            ))
+            conn.commit()
+    except Exception as e:
+        print(f"Error guardando historial SQLite: {e}")
+
+
+def asegurar_csv_respaldo_local():
+    try:
+        asegurar_directorio_datos()
+        if not os.path.exists(RUTA_CSV_RESPALDO_LOCAL):
+            with open(RUTA_CSV_RESPALDO_LOCAL, mode="w", newline="", encoding="utf-8") as archivo:
+                escritor = csv.writer(archivo)
+                escritor.writerow(COLUMNAS_HISTORIAL)
+    except Exception as e:
+        print(f"Error preparando CSV respaldo local: {e}")
+
+
+def guardar_csv_respaldo_local(fila):
+    """Guarda una copia CSV en /home/savia/datos_savia, independiente del CSV principal."""
+    try:
+        asegurar_csv_respaldo_local()
+        with open(RUTA_CSV_RESPALDO_LOCAL, mode="a", newline="", encoding="utf-8") as archivo:
+            escritor = csv.writer(archivo)
+            escritor.writerow(fila)
+    except Exception as e:
+        print(f"Error guardando CSV respaldo local: {e}")
+
+
 ultimo_guardado_csv = {}
 
 
@@ -443,10 +562,11 @@ def asegurar_csv_historial():
 
 
 def guardar_datos_csv(nodo, v1, v2, v3, prom, temp, hum, dato_original):
-    """Guarda una lectura válida en el historial.
+    """Guarda una lectura válida en CSV + SQLite.
 
-    Incluye una protección simple contra duplicados porque el ESP32 puede imprimir
-    una línea de diagnóstico y una línea SAVIA_DATA con los mismos datos.
+    CSV principal: mantiene la exportación que ya funciona en SAVIA.
+    CSV respaldo: copia local ordenada en /home/savia/datos_savia.
+    SQLite: base principal para la futura página web local.
     """
     try:
         asegurar_csv_historial()
@@ -472,25 +592,34 @@ def guardar_datos_csv(nodo, v1, v2, v3, prom, temp, hum, dato_original):
         fecha = time.strftime("%Y-%m-%d")
         hora = time.strftime("%H:%M:%S")
 
+        fila = [
+            fecha_hora,
+            fecha,
+            hora,
+            nodo,
+            f"{v1:.2f}",
+            f"{v2:.2f}",
+            f"{v3:.2f}",
+            f"{prom:.2f}",
+            f"{temp:.2f}",
+            f"{hum:.2f}",
+            puerto_actual if puerto_actual else "",
+            dato_original
+        ]
+
+        # 1) CSV principal usado por la exportación actual.
         with open(RUTA_CSV_HISTORIAL, mode="a", newline="", encoding="utf-8") as archivo:
             escritor = csv.writer(archivo)
-            escritor.writerow([
-                fecha_hora,
-                fecha,
-                hora,
-                nodo,
-                f"{v1:.2f}",
-                f"{v2:.2f}",
-                f"{v3:.2f}",
-                f"{prom:.2f}",
-                f"{temp:.2f}",
-                f"{hum:.2f}",
-                puerto_actual if puerto_actual else "",
-                dato_original
-            ])
+            escritor.writerow(fila)
+
+        # 2) CSV respaldo local dentro de /home/savia/datos_savia.
+        guardar_csv_respaldo_local(fila)
+
+        # 3) SQLite para la futura página web.
+        guardar_datos_sqlite(nodo, v1, v2, v3, prom, temp, hum, dato_original, fecha_hora, fecha, hora)
 
     except Exception as e:
-        print(f"Error guardando historial CSV: {e}")
+        print(f"Error guardando historial CSV/SQLite: {e}")
 
 
 def convertir_fecha_usuario(texto_fecha):
@@ -4067,6 +4196,7 @@ def ejecutar_desde_menu(funcion):
 # Control táctil del scroll del menú.
 # SAVIA_MENU_SCROLL_BAR_NATIVO_FINAL_V1
 # SAVIA_THINGSBOARD_TELEMETRIA_V1
+# SAVIA_SQLITE_CSV_DOBLE_HISTORIAL_V1
 # Scroll corregido: NO usa yview_moveto con la posición del dedo.
 # Usa desplazamiento incremental desde donde quedó el menú, como en una app.
 menu_touch_last_y_root = 0
@@ -4947,6 +5077,10 @@ def on_closing():
 
 
 ventana.protocol("WM_DELETE_WINDOW", on_closing)
+
+# Inicializa almacenamiento doble para histórico SAVIA.
+asegurar_sqlite_historial()
+asegurar_csv_respaldo_local()
 
 activar_detector_inactividad()
 try:
