@@ -17,9 +17,12 @@ import calendar
 from datetime import datetime, timedelta, date
 import smtplib
 from email.message import EmailMessage
+import urllib.request
+import urllib.error
 
 # SAVIA_WIFI_IP_CORREOS_RECIENTES_V1
 # SAVIA_MENU_SCROLL_BAR_NATIVO_FINAL_V1
+# SAVIA_THINGSBOARD_TELEMETRIA_V1
 
 # ==========================================
 # CONFIGURACIÓN UART
@@ -260,6 +263,130 @@ def obtener_ip_raspberry():
 
 # Carga inicial del correo, incluso si SAVIA se abrió sin source.
 cargar_config_correo_desde_archivo()
+
+
+# ==========================================
+# THINGSBOARD / TELEMETRÍA EN LA NUBE
+# ==========================================
+# Configura en /home/savia/savia_thingsboard.env:
+# export SAVIA_TB_HOST="https://demo.thingsboard.io"
+# export SAVIA_TB_TOKEN="ACCESS_TOKEN_DEL_DISPOSITIVO"
+RUTA_THINGSBOARD_ENV = "/home/savia/savia_thingsboard.env"
+ultimo_envio_thingsboard = {}
+ultimo_error_thingsboard = 0
+
+
+def cargar_config_thingsboard_desde_archivo(ruta=RUTA_THINGSBOARD_ENV):
+    try:
+        if not os.path.exists(ruta):
+            return False
+
+        with open(ruta, "r", encoding="utf-8") as archivo:
+            for linea in archivo:
+                linea = linea.strip()
+                if not linea or linea.startswith("#"):
+                    continue
+                if linea.startswith("export "):
+                    linea = linea[len("export "):].strip()
+                if "=" not in linea:
+                    continue
+
+                clave, valor = linea.split("=", 1)
+                clave = clave.strip()
+                valor = valor.strip().strip('"').strip("'")
+
+                if clave.startswith("SAVIA_TB_"):
+                    os.environ[clave] = valor
+        return True
+    except Exception as e:
+        print(f"No se pudo cargar configuración de ThingsBoard: {e}")
+        return False
+
+
+def obtener_config_thingsboard():
+    cargar_config_thingsboard_desde_archivo()
+    host = os.environ.get("SAVIA_TB_HOST", "https://demo.thingsboard.io").strip().rstrip("/")
+    token = os.environ.get("SAVIA_TB_TOKEN", "").strip()
+    habilitado = os.environ.get("SAVIA_TB_ENABLED", "1").strip() != "0"
+    return host, token, habilitado
+
+
+def estado_config_thingsboard():
+    host, token, habilitado = obtener_config_thingsboard()
+    if not habilitado:
+        return False, "ThingsBoard desactivado"
+    if not token:
+        return False, "ThingsBoard sin token"
+    return True, f"ThingsBoard activo: {host}"
+
+
+def enviar_thingsboard_async(nodo, v1, v2, v3, prom, temp, hum):
+    """Envía telemetría a ThingsBoard sin bloquear la interfaz local.
+
+    Si no hay internet o ThingsBoard falla, SAVIA sigue funcionando localmente.
+    """
+    host, token, habilitado = obtener_config_thingsboard()
+    if not habilitado or not token:
+        return
+
+    firma = (
+        nodo,
+        round(v1, 2),
+        round(v2, 2),
+        round(v3, 2),
+        round(temp, 2),
+        round(hum, 2),
+    )
+    ahora = time.time()
+    ultima_firma, ultimo_tiempo = ultimo_envio_thingsboard.get(nodo, (None, 0))
+
+    # Evita duplicados cuando el ESP32 imprime log largo y línea SAVIA_DATA casi iguales.
+    if firma == ultima_firma and (ahora - ultimo_tiempo) < 2.0:
+        return
+
+    ultimo_envio_thingsboard[nodo] = (firma, ahora)
+
+    prefijo = f"nodo{nodo}"
+    payload = {
+        f"{prefijo}_suelo1": round(v1, 2),
+        f"{prefijo}_suelo2": round(v2, 2),
+        f"{prefijo}_suelo3": round(v3, 2),
+        f"{prefijo}_promedio": round(prom, 2),
+        f"{prefijo}_temperatura": round(temp, 2),
+        f"{prefijo}_humedad_aire": round(hum, 2),
+        f"{prefijo}_conectado": True,
+    }
+
+    # También manda una marca general para saber cuál nodo actualizó la última lectura.
+    payload["ultimo_nodo_actualizado"] = nodo
+
+    def tarea():
+        global ultimo_error_thingsboard
+        url = f"{host}/api/v1/{token}/telemetry"
+        try:
+            data = json.dumps(payload).encode("utf-8")
+            req = urllib.request.Request(
+                url,
+                data=data,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                if resp.status not in (200, 204):
+                    raise RuntimeError(f"HTTP {resp.status}")
+            print(f"ThingsBoard OK Nodo {nodo}: {payload}")
+        except Exception as e:
+            # No saturar terminal si se va internet.
+            ahora_error = time.time()
+            if ahora_error - ultimo_error_thingsboard > 15:
+                print(f"No se pudo enviar a ThingsBoard: {e}")
+                ultimo_error_thingsboard = ahora_error
+
+    threading.Thread(target=tarea, daemon=True).start()
+
+
+# Carga inicial de ThingsBoard aunque SAVIA no se haya abierto con source.
+cargar_config_thingsboard_desde_archivo()
 
 
 # ==========================================
@@ -2831,6 +2958,7 @@ def actualizar_datos_nodo(nodo, v1, v2, v3, temp, hum, linea_original):
     })
 
     guardar_datos_csv(nodo, v1, v2, v3, prom, temp, hum, linea_original)
+    enviar_thingsboard_async(nodo, v1, v2, v3, prom, temp, hum)
     actualizar_interfaz_nodo(nodo)
     animar_tarjeta_actualizada(nodo)
     actualizar_resumen_hoy()
@@ -3938,6 +4066,7 @@ def ejecutar_desde_menu(funcion):
 
 # Control táctil del scroll del menú.
 # SAVIA_MENU_SCROLL_BAR_NATIVO_FINAL_V1
+# SAVIA_THINGSBOARD_TELEMETRIA_V1
 # Scroll corregido: NO usa yview_moveto con la posición del dedo.
 # Usa desplazamiento incremental desde donde quedó el menú, como en una app.
 menu_touch_last_y_root = 0
