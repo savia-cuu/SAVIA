@@ -29,6 +29,7 @@ import urllib.error
 # SAVIA_EMAIL_DNS_FIX_V1
 # SAVIA_INTERVALO_LECTURA_30MIN_V1
 # SAVIA_ULTIMA_LECTURA_FECHA_V1
+# SAVIA_FIX_PANTALLA_NEGRA_ULTIMA_LECTURA_FECHA_V2
 
 # ==========================================
 # CONFIGURACIÓN UART
@@ -3013,6 +3014,79 @@ def actualizar_indicadores_conexion_lora():
     except Exception:
         pass
 
+
+
+# ==========================================
+# ÚLTIMA LECTURA CON FECHA - FIX PANTALLA NEGRA
+# ==========================================
+# La versión anterior llamaba estas funciones pero no estaban definidas,
+# por eso la interfaz podía quedarse negra al arrancar. Se agregan aquí
+# para que el texto de última lectura se actualice de forma segura.
+def _parsear_ultimo_dt_seguro(valor):
+    if not valor:
+        return None
+    try:
+        return datetime.fromisoformat(str(valor))
+    except Exception:
+        return None
+
+
+def formatear_ultima_lectura(datos):
+    """Regresa un texto legible para la última lectura del nodo.
+
+    - Si no hay lectura: Sin lectura
+    - Si fue hoy: Hoy HH:MM:SS
+    - Si fue ayer: Ayer HH:MM
+    - Si fue hace más de un día: DD/MM/YYYY HH:MM
+    """
+    try:
+        dt = _parsear_ultimo_dt_seguro(datos.get("ultimo_dt", ""))
+        if dt is None:
+            ultimo = datos.get("ultimo", "Sin lectura")
+            if not ultimo or ultimo == "Sin lectura":
+                return "Sin lectura"
+            return str(ultimo)
+
+        hoy = date.today()
+        fecha_dt = dt.date()
+
+        if fecha_dt == hoy:
+            return f"Hoy {dt.strftime('%H:%M:%S')}"
+
+        if fecha_dt == (hoy - timedelta(days=1)):
+            return f"Ayer {dt.strftime('%H:%M')}"
+
+        return dt.strftime("%d/%m/%Y %H:%M")
+    except Exception as e:
+        print(f"Error formateando última lectura: {e}")
+        return datos.get("ultimo", "Sin lectura") or "Sin lectura"
+
+
+def refrescar_textos_ultima_lectura():
+    """Actualiza el texto de última lectura cada minuto.
+
+    Esto permite que un valor pase de 'Hoy' a 'Ayer' o a fecha completa
+    aunque no llegue una lectura nueva. No bloquea sensores ni la interfaz.
+    """
+    try:
+        for nodo in (1, 2, 3):
+            if nodo in labels_resumen and "estado" in labels_resumen[nodo]:
+                labels_resumen[nodo]["estado"].config(
+                    text=f"Última lectura: {formatear_ultima_lectura(datos_nodos[nodo])}"
+                )
+            if nodo in labels_detalle and "ultimo" in labels_detalle[nodo]:
+                labels_detalle[nodo]["ultimo"].config(
+                    text=f"Última lectura: {formatear_ultima_lectura(datos_nodos[nodo])}"
+                )
+    except Exception as e:
+        print(f"Error refrescando últimas lecturas: {e}")
+
+    try:
+        ventana.after(60000, refrescar_textos_ultima_lectura)
+    except Exception:
+        pass
+
+# SAVIA_FIX_PANTALLA_NEGRA_ULTIMA_LECTURA_FECHA_V2
 
 def actualizar_interfaz_nodo(nodo):
     datos = datos_nodos[nodo]
