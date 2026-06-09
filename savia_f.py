@@ -26,6 +26,9 @@ import urllib.error
 # SAVIA_MENU_SCROLL_BAR_NATIVO_FINAL_V1
 # SAVIA_THINGSBOARD_TELEMETRIA_V1
 # SAVIA_SQLITE_CSV_DOBLE_HISTORIAL_V1
+# SAVIA_EMAIL_DNS_FIX_V1
+# SAVIA_INTERVALO_LECTURA_30MIN_V1
+# SAVIA_ULTIMA_LECTURA_FECHA_V1
 
 # ==========================================
 # CONFIGURACIÓN UART
@@ -664,6 +667,28 @@ def generar_csv_exportacion(fecha_inicio, fecha_fin):
     return ruta_exportacion, total_filas
 
 
+def _verificar_dns_smtp(host):
+    """Verifica que la Raspberry pueda resolver el servidor SMTP antes de enviar.
+
+    El error [Errno -3] Temporary failure in name resolution significa que Linux
+    no pudo convertir smtp.gmail.com en una IP. No es problema del CSV ni de la
+    contraseña; normalmente es WiFi sin internet o DNS fallando.
+    """
+    try:
+        socket.getaddrinfo(host, None)
+        return True, ""
+    except socket.gaierror:
+        return False, (
+            f"El CSV se generó, pero la Raspberry no puede encontrar el servidor de correo ({host}).\n\n"
+            "Esto normalmente pasa cuando hay WiFi sin internet o falla el DNS. "
+            "Conecta la Raspberry a internet y prueba abrir una página o ejecutar:\n"
+            "ping -c 3 google.com\n\n"
+            "Si el ping a una IP funciona pero google.com no, el problema es DNS."
+        )
+    except Exception as e:
+        return False, f"No se pudo verificar el servidor de correo ({host}): {e}"
+
+
 def enviar_csv_por_correo(destinatario, ruta_csv, fecha_inicio, fecha_fin):
     host, port, user, password, sender = obtener_config_correo()
 
@@ -673,6 +698,10 @@ def enviar_csv_por_correo(destinatario, ruta_csv, fecha_inicio, fecha_fin):
             "El CSV se generó, pero el correo no está listo para enviar. "
             f"{estado}. Revisa /home/savia/savia_email.env."
         )
+
+    dns_ok, dns_msg = _verificar_dns_smtp(host)
+    if not dns_ok:
+        raise RuntimeError(dns_msg)
 
     asunto = f"Historial de sensores SAVIA {fecha_inicio:%Y-%m-%d} a {fecha_fin:%Y-%m-%d}"
     cuerpo = (
@@ -710,8 +739,23 @@ def enviar_csv_por_correo(destinatario, ruta_csv, fecha_inicio, fecha_fin):
             "No se pudo iniciar sesión en el correo configurado. "
             "Revisa que SAVIA_SMTP_USER sea el Gmail correcto y que SAVIA_SMTP_PASS sea la contraseña de aplicación, sin espacios."
         )
+    except socket.gaierror:
+        raise RuntimeError(
+            "El CSV se generó, pero la Raspberry no puede resolver el servidor de correo. "
+            "Revisa que tenga internet y DNS funcionando."
+        )
+    except TimeoutError:
+        raise RuntimeError(
+            "El CSV se generó, pero la conexión con el servidor de correo tardó demasiado. "
+            "Revisa internet o intenta de nuevo."
+        )
     except smtplib.SMTPConnectError:
         raise RuntimeError("No se pudo conectar con el servidor de correo. Revisa el internet de la Raspberry.")
+    except OSError as e:
+        raise RuntimeError(
+            f"El CSV se generó, pero hubo un problema de red al enviar el correo: {e}. "
+            "Revisa la conexión WiFi/internet de la Raspberry."
+        )
     except smtplib.SMTPException as e:
         raise RuntimeError(f"Error del servidor de correo: {e}")
 
@@ -1607,6 +1651,9 @@ def crear_estado_nodo():
         "hum": None,
         "prom": None,
         "ultimo": "Sin lectura",
+        # Fecha/hora real de la última lectura. Se usa para mostrar también la fecha
+        # cuando el nodo lleva mucho tiempo sin actualizarse.
+        "ultimo_dt": "",
         "linea": "",
         # Último momento en que la Raspberry recibió datos reales de este nodo.
         # Se usa para mostrar el circulito verde/rojo de conexión LoRa.
@@ -1628,10 +1675,14 @@ resumen_widgets = {}
 # ==========================================
 # ESTADO DE CONEXIÓN LORA POR NODO - SAVIA_LORA_DOTS_ULTIMA_LECTURA
 # ==========================================
-# Si un nodo no manda datos durante este tiempo, se considera sin comunicación reciente.
-# Para tus nodos, que normalmente mandan cada pocos segundos, 45 s da margen suficiente
-# sin tardarse demasiado en avisar si se pierde la comunicación.
-TIEMPO_MAX_SIN_DATO_LORA = 45
+# SAVIA_INTERVALO_LECTURA_30MIN_V1
+# Ahora los nodos enviarán lecturas cada 30 minutos. Por eso el indicador
+# LoRa NO debe ponerse rojo a los 45 segundos como antes.
+# Se considera conectado si recibió datos dentro del intervalo esperado
+# más un margen de seguridad.
+INTERVALO_LECTURA_NODOS_MIN = int(os.environ.get("SAVIA_INTERVALO_LECTURA_NODOS_MIN", "30"))
+MARGEN_SIN_DATO_LORA_MIN = int(os.environ.get("SAVIA_MARGEN_SIN_DATO_LORA_MIN", "15"))
+TIEMPO_MAX_SIN_DATO_LORA = (INTERVALO_LECTURA_NODOS_MIN + MARGEN_SIN_DATO_LORA_MIN) * 60
 
 COLOR_LORA_CONECTADO = "#2d6a4f"
 COLOR_LORA_DESCONECTADO = "#e63946"
@@ -2923,7 +2974,8 @@ def obtener_estado_conexion_lora(nodo):
     if segundos_sin_dato <= TIEMPO_MAX_SIN_DATO_LORA:
         return "conectado", COLOR_LORA_CONECTADO, "Conectado"
 
-    return "desconectado", COLOR_LORA_DESCONECTADO, "Sin señal"
+    minutos = int(segundos_sin_dato // 60)
+    return "desconectado", COLOR_LORA_DESCONECTADO, f"Sin señal ({minutos} min)"
 
 
 def actualizar_indicador_conexion_lora(nodo):
@@ -2955,9 +3007,9 @@ def actualizar_indicadores_conexion_lora():
     for nodo in (1, 2, 3):
         actualizar_indicador_conexion_lora(nodo)
 
-    # Revisa cada 2 segundos para que el círculo pase a rojo aunque ya no lleguen datos.
+    # Revisa cada 10 segundos; el umbral real ahora está calibrado para lecturas cada 30 min.
     try:
-        ventana.after(2000, actualizar_indicadores_conexion_lora)
+        ventana.after(10000, actualizar_indicadores_conexion_lora)
     except Exception:
         pass
 
@@ -2970,7 +3022,7 @@ def actualizar_interfaz_nodo(nodo):
             text=formato_porcentaje(datos["prom"]),
             fg=color_por_humedad(datos["prom"])
         )
-        labels_resumen[nodo]["estado"].config(text=f"Última lectura: {datos['ultimo']}")
+        labels_resumen[nodo]["estado"].config(text=f"Última lectura: {formatear_ultima_lectura(datos)}")
         labels_resumen[nodo]["clima"].config(
             text=f"🌡 {formato_temp(datos['temp'])}   💧 Aire {formato_porcentaje(datos['hum'])}"
         )
@@ -2988,7 +3040,7 @@ def actualizar_interfaz_nodo(nodo):
         detalle["s3"].config(text=formato_porcentaje(datos["s3"]))
         detalle["temp"].config(text=formato_temp(datos["temp"]))
         detalle["hum"].config(text=formato_porcentaje(datos["hum"]))
-        detalle["ultimo"].config(text=f"Última lectura: {datos['ultimo']}")
+        detalle["ultimo"].config(text=f"Última lectura: {formatear_ultima_lectura(datos)}")
 
 
 
@@ -3074,6 +3126,9 @@ def actualizar_datos_nodo(nodo, v1, v2, v3, temp, hum, linea_original):
 
     prom = (v1 + v2 + v3) / 3.0
 
+    ahora_dt = datetime.now().replace(microsecond=0)
+    ahora_epoch = time.time()
+
     datos_nodos[nodo].update({
         "s1": v1,
         "s2": v2,
@@ -3081,9 +3136,10 @@ def actualizar_datos_nodo(nodo, v1, v2, v3, temp, hum, linea_original):
         "temp": temp,
         "hum": hum,
         "prom": prom,
-        "ultimo": time.strftime("%H:%M:%S"),
+        "ultimo": ahora_dt.strftime("%H:%M:%S"),
+        "ultimo_dt": ahora_dt.isoformat(),
         "linea": linea_original,
-        "last_rx_epoch": time.time()
+        "last_rx_epoch": ahora_epoch
     })
 
     guardar_datos_csv(nodo, v1, v2, v3, prom, temp, hum, linea_original)
@@ -4197,6 +4253,7 @@ def ejecutar_desde_menu(funcion):
 # SAVIA_MENU_SCROLL_BAR_NATIVO_FINAL_V1
 # SAVIA_THINGSBOARD_TELEMETRIA_V1
 # SAVIA_SQLITE_CSV_DOBLE_HISTORIAL_V1
+# SAVIA_EMAIL_DNS_FIX_V1
 # Scroll corregido: NO usa yview_moveto con la posición del dedo.
 # Usa desplazamiento incremental desde donde quedó el menú, como en una app.
 menu_touch_last_y_root = 0
@@ -5090,6 +5147,7 @@ except Exception as e:
 actualizar_resumen_hoy()
 actualizar_alertas_riego()
 actualizar_indicadores_conexion_lora()
+refrescar_textos_ultima_lectura()
 mostrar_pantalla_inicio()
 ventana.after(500, leer_sensores)
 ventana.mainloop()
