@@ -30,7 +30,7 @@ import urllib.error
 # SAVIA_INTERVALO_LECTURA_30MIN_V1
 # SAVIA_ULTIMA_LECTURA_FECHA_V1
 # SAVIA_FIX_PANTALLA_NEGRA_ULTIMA_LECTURA_FECHA_V2
-# SAVIA_RESET_NODOS_DISTRIBUIDOS_V1
+# SAVIA_RESET_NODOS_DISTRIBUIDOS_1R_2R_3R_V2
 
 # ==========================================
 # CONFIGURACIÓN UART
@@ -1675,9 +1675,9 @@ ventanas_detalle = {}
 resumen_widgets = {}
 
 # ==========================================
-# RESET DE NODOS DISTRIBUIDOS - SAVIA_RESET_NODOS_DISTRIBUIDOS_V1
+# RESET DE NODOS DISTRIBUIDOS - SAVIA_RESET_NODOS_DISTRIBUIDOS_1R_2R_3R_V2
 # ==========================================
-# Cada botón Reset queda enclavado visualmente después de enviar R1/R2/R3.
+# Cada botón Reset queda enclavado visualmente después de enviar 1R/2R/3R.
 # Se libera automáticamente cuando vuelve a recibirse una lectura válida del nodo.
 reset_pendiente_nodos = {1: False, 2: False, 3: False}
 
@@ -3054,7 +3054,7 @@ def actualizar_boton_reset_nodo(nodo):
             )
             if lbl:
                 lbl.config(
-                    text=f"Comando R{nodo} enviado. Se liberará al recibir nueva lectura.",
+                    text=f"Comando {nodo}R enviado. Se liberará al recibir nueva lectura.",
                     fg="#e76f51"
                 )
         else:
@@ -3073,11 +3073,11 @@ def actualizar_boton_reset_nodo(nodo):
 
 
 def enviar_reset_nodo_distribuido(nodo):
-    """Envía R1/R2/R3 al ESP32 central y enclava el botón hasta nueva lectura."""
+    """Envía 1R/2R/3R al ESP32 central y enclava el botón hasta nueva lectura."""
     if nodo not in (1, 2, 3):
         return
 
-    comando = f"R{nodo}"
+    comando = f"{nodo}R"
     reset_pendiente_nodos[nodo] = True
     actualizar_boton_reset_nodo(nodo)
 
