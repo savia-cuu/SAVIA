@@ -30,6 +30,7 @@ import urllib.error
 # SAVIA_INTERVALO_LECTURA_30MIN_V1
 # SAVIA_ULTIMA_LECTURA_FECHA_V1
 # SAVIA_FIX_PANTALLA_NEGRA_ULTIMA_LECTURA_FECHA_V2
+# SAVIA_RESET_NODOS_DISTRIBUIDOS_V1
 
 # ==========================================
 # CONFIGURACIÓN UART
@@ -1674,6 +1675,19 @@ ventanas_detalle = {}
 resumen_widgets = {}
 
 # ==========================================
+# RESET DE NODOS DISTRIBUIDOS - SAVIA_RESET_NODOS_DISTRIBUIDOS_V1
+# ==========================================
+# Cada botón Reset queda enclavado visualmente después de enviar R1/R2/R3.
+# Se libera automáticamente cuando vuelve a recibirse una lectura válida del nodo.
+reset_pendiente_nodos = {1: False, 2: False, 3: False}
+
+COLOR_RESET_NORMAL = "#e9ecef"
+COLOR_RESET_PENDIENTE = "#f4a261"
+COLOR_RESET_TEXTO_NORMAL = "#1b4332"
+COLOR_RESET_TEXTO_PENDIENTE = "#3d2b00"
+
+
+# ==========================================
 # ESTADO DE CONEXIÓN LORA POR NODO - SAVIA_LORA_DOTS_ULTIMA_LECTURA
 # ==========================================
 # SAVIA_INTERVALO_LECTURA_30MIN_V1
@@ -3016,6 +3030,72 @@ def actualizar_indicadores_conexion_lora():
 
 
 
+def actualizar_boton_reset_nodo(nodo):
+    """Actualiza el botón Reset del detalle de cada nodo.
+
+    Normal: botón gris. Enclavado: botón naranja hasta recibir nueva lectura.
+    """
+    try:
+        detalle = labels_detalle.get(nodo, {})
+        btn = detalle.get("reset_btn")
+        lbl = detalle.get("reset_estado")
+
+        if not btn:
+            return
+
+        if reset_pendiente_nodos.get(nodo, False):
+            btn.config(
+                text=f"Reset enviado\nEsperando Nodo {nodo}",
+                bg=COLOR_RESET_PENDIENTE,
+                fg=COLOR_RESET_TEXTO_PENDIENTE,
+                activebackground=COLOR_RESET_PENDIENTE,
+                activeforeground=COLOR_RESET_TEXTO_PENDIENTE,
+                relief="sunken"
+            )
+            if lbl:
+                lbl.config(
+                    text=f"Comando R{nodo} enviado. Se liberará al recibir nueva lectura.",
+                    fg="#e76f51"
+                )
+        else:
+            btn.config(
+                text="Reset",
+                bg=COLOR_RESET_NORMAL,
+                fg=COLOR_RESET_TEXTO_NORMAL,
+                activebackground="#d8f3dc",
+                activeforeground=COLOR_RESET_TEXTO_NORMAL,
+                relief="flat"
+            )
+            if lbl:
+                lbl.config(text="", fg="#6c757d")
+    except Exception as e:
+        print(f"No se pudo actualizar botón Reset Nodo {nodo}: {e}")
+
+
+def enviar_reset_nodo_distribuido(nodo):
+    """Envía R1/R2/R3 al ESP32 central y enclava el botón hasta nueva lectura."""
+    if nodo not in (1, 2, 3):
+        return
+
+    comando = f"R{nodo}"
+    reset_pendiente_nodos[nodo] = True
+    actualizar_boton_reset_nodo(nodo)
+
+    try:
+        enviar_comando(comando)
+        print(f"Reset solicitado para Nodo {nodo}: {comando}")
+    except Exception as e:
+        print(f"Error enviando reset {comando}: {e}")
+
+
+def liberar_reset_si_llega_dato(nodo):
+    """Quita el enclavamiento del Reset cuando vuelve a entrar una lectura válida."""
+    if nodo in reset_pendiente_nodos and reset_pendiente_nodos.get(nodo):
+        reset_pendiente_nodos[nodo] = False
+        actualizar_boton_reset_nodo(nodo)
+
+
+
 # ==========================================
 # ÚLTIMA LECTURA CON FECHA - FIX PANTALLA NEGRA
 # ==========================================
@@ -3115,6 +3195,7 @@ def actualizar_interfaz_nodo(nodo):
         detalle["temp"].config(text=formato_temp(datos["temp"]))
         detalle["hum"].config(text=formato_porcentaje(datos["hum"]))
         detalle["ultimo"].config(text=f"Última lectura: {formatear_ultima_lectura(datos)}")
+        actualizar_boton_reset_nodo(nodo)
 
 
 
@@ -3215,6 +3296,9 @@ def actualizar_datos_nodo(nodo, v1, v2, v3, temp, hum, linea_original):
         "linea": linea_original,
         "last_rx_epoch": ahora_epoch
     })
+
+    # El botón Reset queda enclavado hasta que entra una lectura válida del mismo nodo.
+    liberar_reset_si_llega_dato(nodo)
 
     guardar_datos_csv(nodo, v1, v2, v3, prom, temp, hum, linea_original)
     enviar_thingsboard_async(nodo, v1, v2, v3, prom, temp, hum)
@@ -5104,7 +5188,33 @@ def abrir_detalle_nodo(nodo):
         fg="#6c757d",
         wraplength=190
     )
-    lbl_ultimo.pack(expand=True)
+    lbl_ultimo.pack(fill="x", pady=(0, 8))
+
+    btn_reset = tk.Button(
+        tarjeta_estado,
+        text="Reset",
+        font=("Segoe UI", 11, "bold"),
+        bg=COLOR_RESET_NORMAL,
+        fg=COLOR_RESET_TEXTO_NORMAL,
+        activebackground="#d8f3dc",
+        activeforeground=COLOR_RESET_TEXTO_NORMAL,
+        relief="flat",
+        bd=0,
+        height=2,
+        command=lambda n=nodo: enviar_reset_nodo_distribuido(n)
+    )
+    btn_reset.pack(fill="x", pady=(4, 5))
+
+    lbl_reset_estado = tk.Label(
+        tarjeta_estado,
+        text="",
+        font=("Segoe UI", 8, "bold"),
+        bg="white",
+        fg="#6c757d",
+        wraplength=185,
+        justify="center"
+    )
+    lbl_reset_estado.pack(fill="x", pady=(0, 2))
 
     labels_detalle[nodo] = {
         "titulo_ventana": lbl_titulo_detalle,
@@ -5118,11 +5228,14 @@ def abrir_detalle_nodo(nodo):
         "s3_titulo": getattr(lbl_s3, "titulo_label", None),
         "temp": lbl_temp,
         "hum": lbl_hum,
-        "ultimo": lbl_ultimo
+        "ultimo": lbl_ultimo,
+        "reset_btn": btn_reset,
+        "reset_estado": lbl_reset_estado
     }
 
     detalle.protocol("WM_DELETE_WINDOW", cerrar_detalle)
     actualizar_interfaz_nodo(nodo)
+    actualizar_boton_reset_nodo(nodo)
 
 
 for nodo in (1, 2, 3):
