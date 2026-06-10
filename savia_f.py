@@ -18,6 +18,7 @@ import calendar
 from datetime import datetime, timedelta, date
 from pathlib import Path
 import smtplib
+import socket
 from email.message import EmailMessage
 import urllib.request
 import urllib.error
@@ -34,6 +35,7 @@ import string
 # SAVIA_FIX_PANTALLA_NEGRA_ULTIMA_LECTURA_FECHA_V2
 # SAVIA_RESET_NODOS_DISTRIBUIDOS_1R_2R_3R_V2
 # SAVIA_RUSTDESK_INFO_MENU_V1
+# SAVIA_EMAIL_SOCKET_IMPORT_FIX_V1
 
 # ==========================================
 # CONFIGURACIÓN UART
