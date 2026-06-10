@@ -21,6 +21,8 @@ import smtplib
 from email.message import EmailMessage
 import urllib.request
 import urllib.error
+import secrets
+import string
 
 # SAVIA_WIFI_IP_CORREOS_RECIENTES_V1
 # SAVIA_MENU_SCROLL_BAR_NATIVO_FINAL_V1
@@ -31,6 +33,7 @@ import urllib.error
 # SAVIA_ULTIMA_LECTURA_FECHA_V1
 # SAVIA_FIX_PANTALLA_NEGRA_ULTIMA_LECTURA_FECHA_V2
 # SAVIA_RESET_NODOS_DISTRIBUIDOS_1R_2R_3R_V2
+# SAVIA_RUSTDESK_INFO_MENU_V1
 
 # ==========================================
 # CONFIGURACIÓN UART
@@ -4258,6 +4261,305 @@ frame_header_menu.grid(row=0, column=2, sticky="e", padx=12)
 
 
 
+
+# ==========================================
+# ACCESO REMOTO RUSTDESK - SAVIA_RUSTDESK_INFO_MENU_V1
+# ==========================================
+# Este módulo permite ver desde la interfaz el ID de RustDesk y una contraseña
+# permanente controlada por SAVIA, sin abrir una terminal SSH.
+RUTA_RUSTDESK_SAVIA = os.environ.get(
+    "SAVIA_RUSTDESK_CONFIG",
+    "/home/savia/savia_rustdesk.json"
+)
+
+
+def _rustdesk_env():
+    env = os.environ.copy()
+    env.setdefault("DISPLAY", ":0")
+    env.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+    return env
+
+
+def _ejecutar_rustdesk(argumentos, timeout=8):
+    """Ejecuta rustdesk sin bloquear la interfaz.
+
+    Devuelve (ok, stdout, stderr). No lanza excepción hacia la UI.
+    """
+    try:
+        resultado = subprocess.run(
+            ["rustdesk"] + list(argumentos),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=_rustdesk_env()
+        )
+        return resultado.returncode == 0, resultado.stdout.strip(), resultado.stderr.strip()
+    except FileNotFoundError:
+        return False, "", "RustDesk no está instalado o no se encontró el comando 'rustdesk'."
+    except subprocess.TimeoutExpired:
+        return False, "", "RustDesk tardó demasiado en responder."
+    except Exception as e:
+        return False, "", str(e)
+
+
+def _leer_config_rustdesk_savia():
+    try:
+        if not os.path.exists(RUTA_RUSTDESK_SAVIA):
+            return {}
+        with open(RUTA_RUSTDESK_SAVIA, "r", encoding="utf-8") as archivo:
+            datos = json.load(archivo)
+        return datos if isinstance(datos, dict) else {}
+    except Exception as e:
+        print(f"No se pudo leer configuración RustDesk SAVIA: {e}")
+        return {}
+
+
+def _guardar_config_rustdesk_savia(datos):
+    try:
+        carpeta = os.path.dirname(RUTA_RUSTDESK_SAVIA)
+        if carpeta:
+            os.makedirs(carpeta, exist_ok=True)
+        with open(RUTA_RUSTDESK_SAVIA, "w", encoding="utf-8") as archivo:
+            json.dump(datos, archivo, ensure_ascii=False, indent=2)
+        try:
+            os.chmod(RUTA_RUSTDESK_SAVIA, 0o600)
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"No se pudo guardar configuración RustDesk SAVIA: {e}")
+
+
+def _generar_password_rustdesk(longitud=10):
+    alfabeto = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
+    return "".join(secrets.choice(alfabeto) for _ in range(longitud))
+
+
+def obtener_o_crear_password_rustdesk():
+    datos = _leer_config_rustdesk_savia()
+    password = str(datos.get("password", "")).strip()
+    if len(password) < 6:
+        password = _generar_password_rustdesk(10)
+        datos["password"] = password
+        datos["creado"] = datetime.now().replace(microsecond=0).isoformat()
+        _guardar_config_rustdesk_savia(datos)
+    return password
+
+
+def obtener_id_rustdesk():
+    ok, salida, error = _ejecutar_rustdesk(["--get-id"], timeout=10)
+    if not ok:
+        return "No disponible", error or "No se pudo obtener el ID de RustDesk."
+
+    # RustDesk normalmente devuelve solamente el ID, pero filtramos por seguridad.
+    for linea in salida.splitlines():
+        linea = linea.strip()
+        if linea and re.search(r"[A-Za-z0-9]", linea):
+            return linea, ""
+
+    return "No disponible", "RustDesk no devolvió un ID válido."
+
+
+def aplicar_password_rustdesk(password):
+    ok, salida, error = _ejecutar_rustdesk(["--password", password], timeout=10)
+    return ok, salida, error
+
+
+def obtener_estado_servicio_rustdesk():
+    try:
+        r = subprocess.run(
+            ["systemctl", "is-active", "rustdesk"],
+            capture_output=True,
+            text=True,
+            timeout=3
+        )
+        estado = r.stdout.strip()
+        if estado == "active":
+            return "Servicio activo"
+        if estado:
+            return f"Servicio: {estado}"
+    except Exception:
+        pass
+    return "Servicio no confirmado"
+
+
+def abrir_info_rustdesk():
+    win = tk.Toplevel(ventana)
+    win.title("Acceso remoto RustDesk")
+    win.geometry("800x480+0+0")
+    win.configure(bg="#f4f7f6")
+    win.resizable(False, False)
+    win.transient(ventana)
+    win.grab_set()
+    win.focus_force()
+    try:
+        win.attributes("-fullscreen", True)
+    except Exception:
+        pass
+
+    def cerrar():
+        try:
+            win.grab_release()
+        except Exception:
+            pass
+        win.destroy()
+
+    header = tk.Frame(win, bg="#2d6a4f", height=54)
+    header.pack(fill="x")
+    header.pack_propagate(False)
+
+    tk.Label(
+        header,
+        text="🖥️ Acceso remoto RustDesk",
+        font=("Segoe UI", 16, "bold"),
+        bg="#2d6a4f",
+        fg="white"
+    ).pack(side="left", padx=18)
+
+    tk.Button(
+        header,
+        text="Cerrar",
+        font=("Segoe UI", 11, "bold"),
+        bg="white",
+        fg="#2d6a4f",
+        relief="flat",
+        bd=0,
+        padx=16,
+        command=cerrar
+    ).pack(side="right", padx=12, pady=8)
+
+    body = tk.Frame(win, bg="#f4f7f6", padx=24, pady=18)
+    body.pack(fill="both", expand=True)
+
+    tk.Label(
+        body,
+        text="Usa estos datos en RustDesk desde tu celular o computadora para conectarte a esta Raspberry.",
+        font=("Segoe UI", 12, "bold"),
+        bg="#f4f7f6",
+        fg="#1b4332",
+        wraplength=740,
+        justify="left"
+    ).pack(anchor="w", pady=(0, 12))
+
+    card = tk.Frame(body, bg="white", highlightbackground="#b7e4c7", highlightthickness=2, padx=22, pady=18)
+    card.pack(fill="both", expand=True)
+
+    lbl_estado = tk.Label(
+        card,
+        text="Consultando RustDesk...",
+        font=("Segoe UI", 11, "bold"),
+        bg="white",
+        fg="#6c757d",
+        anchor="w"
+    )
+    lbl_estado.pack(fill="x", pady=(0, 12))
+
+    tk.Label(card, text="ID RustDesk", font=("Segoe UI", 12, "bold"), bg="white", fg="#6c757d").pack(anchor="w")
+    lbl_id = tk.Label(
+        card,
+        text="---",
+        font=("Segoe UI", 32, "bold"),
+        bg="#f8f9fa",
+        fg="#1b4332",
+        padx=12,
+        pady=8
+    )
+    lbl_id.pack(fill="x", pady=(4, 16))
+
+    tk.Label(card, text="Contraseña permanente", font=("Segoe UI", 12, "bold"), bg="white", fg="#6c757d").pack(anchor="w")
+    lbl_pass = tk.Label(
+        card,
+        text="---",
+        font=("Segoe UI", 26, "bold"),
+        bg="#f8f9fa",
+        fg="#1b4332",
+        padx=12,
+        pady=8
+    )
+    lbl_pass.pack(fill="x", pady=(4, 14))
+
+    lbl_nota = tk.Label(
+        card,
+        text="Nota: la Raspberry debe tener internet y el servicio de RustDesk debe estar activo.",
+        font=("Segoe UI", 9, "bold"),
+        bg="white",
+        fg="#6c757d",
+        wraplength=700,
+        justify="left"
+    )
+    lbl_nota.pack(fill="x", pady=(0, 10))
+
+    frame_botones = tk.Frame(card, bg="white")
+    frame_botones.pack(fill="x", pady=(4, 0))
+
+    def refrescar():
+        lbl_estado.config(text="Consultando RustDesk...", fg="#6c757d")
+        lbl_id.config(text="---")
+        lbl_pass.config(text="---")
+        btn_refrescar.config(state="disabled", text="Actualizando...")
+
+        def trabajo():
+            rid, error_id = obtener_id_rustdesk()
+            password = obtener_o_crear_password_rustdesk()
+            ok_pass, salida_pass, error_pass = aplicar_password_rustdesk(password)
+            servicio = obtener_estado_servicio_rustdesk()
+
+            def terminar():
+                btn_refrescar.config(state="normal", text="Actualizar datos")
+                lbl_id.config(text=rid)
+                lbl_pass.config(text=password)
+
+                mensajes = [servicio]
+                if error_id:
+                    mensajes.append(error_id)
+                if ok_pass:
+                    mensajes.append("Contraseña aplicada correctamente")
+                    color = "#2d6a4f" if not error_id else "#f4a261"
+                else:
+                    mensajes.append("No se pudo aplicar la contraseña automáticamente")
+                    if error_pass:
+                        mensajes.append(error_pass)
+                    color = "#e63946"
+
+                lbl_estado.config(text=" · ".join(mensajes), fg=color)
+
+            try:
+                win.after(0, terminar)
+            except Exception:
+                pass
+
+        threading.Thread(target=trabajo, daemon=True).start()
+
+    btn_refrescar = tk.Button(
+        frame_botones,
+        text="Actualizar datos",
+        font=("Segoe UI", 12, "bold"),
+        bg="#52b788",
+        fg="white",
+        activebackground="#40916c",
+        activeforeground="white",
+        relief="flat",
+        bd=0,
+        height=2,
+        command=refrescar
+    )
+    btn_refrescar.pack(side="left", fill="x", expand=True, padx=(0, 6))
+
+    tk.Button(
+        frame_botones,
+        text="Cerrar",
+        font=("Segoe UI", 12, "bold"),
+        bg="#e9ecef",
+        fg="#1b4332",
+        activebackground="#ced4da",
+        activeforeground="#1b4332",
+        relief="flat",
+        bd=0,
+        height=2,
+        command=cerrar
+    ).pack(side="left", fill="x", expand=True, padx=(6, 0))
+
+    win.after(200, refrescar)
+
 # ==========================================
 # ACTUALIZACIÓN DESDE LA INTERFAZ
 # ==========================================
@@ -4720,6 +5022,15 @@ crear_boton_menu(
     "📶  Conectar a WiFi",
     "Busca redes disponibles y guarda la conexión.",
     abrir_config_wifi,
+    bg="white",
+    fg="#1b4332"
+)
+
+crear_boton_menu(
+    seccion_conectividad,
+    "🖥️  Acceso remoto RustDesk",
+    "Muestra el ID y la contraseña para conectarse desde celular o computadora.",
+    abrir_info_rustdesk,
     bg="white",
     fg="#1b4332"
 )
